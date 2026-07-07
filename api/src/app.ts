@@ -10,6 +10,9 @@ import { registerEventsRoute } from "./routes/events.js";
 import { registerTimeseriesRoute } from "./routes/metrics/timeseries.js";
 import { registerTopRoute } from "./routes/metrics/top.js";
 import { registerLatencyRoute } from "./routes/metrics/latency.js";
+import { registerFunnelRoute } from "./routes/metrics/funnel.js";
+import { registerRetentionRoute } from "./routes/metrics/retention.js";
+import { registerSessionsRoute } from "./routes/sessions.js";
 
 export interface AppDeps {
   pool: Pool;
@@ -49,6 +52,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerTimeseriesRoute(app);
   registerTopRoute(app);
   registerLatencyRoute(app);
+  registerFunnelRoute(app);
+  registerRetentionRoute(app);
+  registerSessionsRoute(app);
 
   return app;
 }
