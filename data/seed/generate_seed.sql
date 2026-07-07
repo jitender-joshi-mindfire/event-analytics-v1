@@ -10,7 +10,8 @@ SELECT setseed(0.42);  -- reproducibility
 
 -- ---- parameters -----------------------------------------------------------
 \set N_USERS 50000
-\set EVENTS_PER_USER 60          -- ~3,000,000 events
+-- ~3,000,000 events
+\set EVENTS_PER_USER 60
 \set BASE_TS '2026-01-01 00:00:00+00'
 
 -- ---- users ----------------------------------------------------------------
@@ -34,7 +35,17 @@ SELECT
     u.user_id,
     -- sessions cluster: bucket events into pseudo-sessions of ~8
     's_' || u.user_id || '_' || floor(e / 8.0)::int,
-    et.event_type,
+    -- inlined directly (not a CROSS JOIN LATERAL subquery): an uncorrelated
+    -- lateral subquery isn't re-evaluated per outer row, so random() inside
+    -- one gets computed once and reused for every event — this must live in
+    -- the same SELECT list as the other per-row random() calls below.
+    (ARRAY[
+        'view_page','view_page','view_page','view_page',
+        'login','login',
+        'add_to_cart','add_to_cart',
+        'signup',
+        'purchase'
+    ])[1 + floor(random()*10)::int],
     -- occurred_at after signup, spread over up to 90 days, clustered intra-day
     u.signup_at
         + (floor(random() * 90) || ' days')::interval
@@ -47,16 +58,7 @@ SELECT
         'country', u.country
     )
 FROM users u
-CROSS JOIN LATERAL generate_series(1, :EVENTS_PER_USER) AS e
-CROSS JOIN LATERAL (
-    SELECT (ARRAY[
-        'view_page','view_page','view_page','view_page',
-        'login','login',
-        'add_to_cart','add_to_cart',
-        'signup',
-        'purchase'
-    ])[1 + floor(random()*10)::int] AS event_type
-) et;
+CROSS JOIN LATERAL generate_series(1, :EVENTS_PER_USER) AS e;
 
 -- Ensure every user has exactly one signup event at their signup_at so the
 -- funnel and retention have a clean anchor.
