@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cors from "@fastify/cors";
 import ajvFormats from "ajv-formats";
 import type { Plugin } from "ajv";
 import type { Pool } from "pg";
@@ -45,6 +46,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   app.decorate("pg", deps.pool);
   app.decorate("redis", deps.redis);
+
+  // No auth in this project (see REQUIREMENTS.md non-goals), and the
+  // dashboard is served from a different origin/port than the API in both
+  // dev and docker-compose — permissive CORS is the right call here rather
+  // than hardcoding a specific dashboard origin.
+  void app.register(cors, { origin: true });
 
   registerErrorHandler(app);
   registerHealthRoute(app);
