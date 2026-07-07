@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { badRequest } from "../errors/problem.js";
 import { eventBatchBodySchema, type EventBatchInput } from "../schemas/event.js";
+import { bumpEventsVersion } from "../cache/eventsVersion.js";
 
 const ingestResultSchema = {
   type: "object",
@@ -59,6 +60,11 @@ export function registerEventsRoute(app: FastifyInstance): void {
         ]);
 
         const accepted = result.rowCount ?? 0;
+        if (accepted > 0) {
+          // Only bump on genuinely new rows; a pure duplicate resend shouldn't
+          // invalidate the timeseries cache.
+          await bumpEventsVersion(app.redis);
+        }
         return reply.code(202).send({
           received: events.length,
           accepted,

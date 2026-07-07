@@ -7,6 +7,9 @@ import { config } from "./config.js";
 import { registerErrorHandler } from "./plugins/errorHandler.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerEventsRoute } from "./routes/events.js";
+import { registerTimeseriesRoute } from "./routes/metrics/timeseries.js";
+import { registerTopRoute } from "./routes/metrics/top.js";
+import { registerLatencyRoute } from "./routes/metrics/latency.js";
 
 export interface AppDeps {
   pool: Pool;
@@ -43,6 +46,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerErrorHandler(app);
   registerHealthRoute(app);
   registerEventsRoute(app);
+  registerTimeseriesRoute(app);
+  registerTopRoute(app);
+  registerLatencyRoute(app);
 
   return app;
 }
