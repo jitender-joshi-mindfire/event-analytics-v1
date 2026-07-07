@@ -5,6 +5,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-event_analytics}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    # Stock defaults (shared_buffers=128MB, work_mem=4MB) push the analytical
+    # queries' hash aggregates to disk against the 3M-row seed and blow the
+    # p95 targets in REQUIREMENTS.md; these values keep the seeded dataset's
+    # hot working set in Postgres's own buffer pool instead of round-tripping
+    # through disk on every request.
+    command: postgres -c shared_buffers=512MB -c effective_cache_size=1GB -c work_mem=32MB -c maintenance_work_mem=256MB
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
