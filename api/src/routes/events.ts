@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { badRequest } from "../errors/problem.js";
+import { badRequest, tooManyRequests } from "../errors/problem.js";
 import { eventBatchBodySchema, type EventBatchInput } from "../schemas/event.js";
 import { bumpEventsVersion } from "../cache/eventsVersion.js";
+import { isIngestRateLimited } from "../rateLimit/ingestRateLimiter.js";
 
 const ingestResultSchema = {
   type: "object",
@@ -41,6 +42,10 @@ export function registerEventsRoute(app: FastifyInstance): void {
     },
     async (request, reply) => {
       const { events } = request.body;
+
+      if (await isIngestRateLimited(app.redis)) {
+        throw tooManyRequests("Ingest rate limit exceeded. Slow down and retry shortly.");
+      }
 
       const eventIds = events.map((e) => e.event_id);
       const userIds = events.map((e) => e.user_id);
