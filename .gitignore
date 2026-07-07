@@ -5,6 +5,7 @@ coverage/
 *.log
 .env
 .env.*
+!.env.example
 # never commit the generated seed dump — commit the generator, not its output
 data/seed/*.dump
 data/seed/*.csv
