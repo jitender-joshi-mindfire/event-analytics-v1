@@ -1,0 +1,501 @@
+openapi: 3.1.0
+info:
+  title: Event Analytics & Metrics API
+  version: 1.0.0
+  description: >
+    Ingest product usage events and serve pre-aggregated metrics. This contract is
+    authoritative: response bodies MUST validate against these schemas exactly.
+servers:
+  - url: http://localhost:8080
+    description: Local docker-compose
+
+tags:
+  - name: ingest
+  - name: metrics
+  - name: sessions
+  - name: ops
+
+paths:
+  /v1/health:
+    get:
+      tags: [ops]
+      summary: Liveness + readiness
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is ready (DB and Redis reachable)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              examples:
+                ready:
+                  value: { status: "ready", checks: { postgres: "up", redis: "up" } }
+        "503":
+          description: Service not ready
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /v1/events:
+    post:
+      tags: [ingest]
+      summary: Ingest a batch of events (idempotent per event_id)
+      operationId: ingestEvents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventBatch" }
+            examples:
+              batch:
+                value:
+                  events:
+                    - event_id: "0f6c2e2a-1b7e-4a9c-9b0e-1a2b3c4d5e6f"
+                      user_id: "u_1024"
+                      session_id: "s_77"
+                      event_type: "purchase"
+                      occurred_at: "2026-01-15T10:32:00Z"
+                      payload: { amount: 49.9, page: "/checkout", latency_ms: 220 }
+      responses:
+        "202":
+          description: Batch accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestResult" }
+              examples:
+                ok:
+                  value: { received: 1000, accepted: 982, duplicates: 18 }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          description: Batch too large
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429":
+          description: Rate limited
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /v1/metrics/timeseries:
+    get:
+      tags: [metrics]
+      summary: Event counts bucketed over time, gap-filled
+      operationId: getTimeseries
+      parameters:
+        - { $ref: "#/components/parameters/From" }
+        - { $ref: "#/components/parameters/To" }
+        - name: bucket
+          in: query
+          required: true
+          schema: { type: string, enum: [hour, day, week] }
+        - name: event_type
+          in: query
+          required: false
+          schema: { type: string }
+          description: Optional filter to a single event type.
+      responses:
+        "200":
+          description: Time series
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeseriesResponse" }
+              examples:
+                day:
+                  value:
+                    bucket: "day"
+                    series:
+                      - { ts: "2026-01-15T00:00:00Z", count: 4210 }
+                      - { ts: "2026-01-16T00:00:00Z", count: 0 }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/metrics/funnel:
+    get:
+      tags: [metrics]
+      summary: Ordered step-conversion funnel
+      operationId: getFunnel
+      parameters:
+        - { $ref: "#/components/parameters/From" }
+        - { $ref: "#/components/parameters/To" }
+        - name: steps
+          in: query
+          required: true
+          description: Ordered, comma-separated event types defining the funnel.
+          schema: { type: string }
+          example: "signup,view_page,add_to_cart,purchase"
+        - name: window
+          in: query
+          required: false
+          description: Conversion window (ISO-8601 duration). Default P7D.
+          schema: { type: string, default: "P7D" }
+      responses:
+        "200":
+          description: Funnel
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunnelResponse" }
+              examples:
+                f:
+                  value:
+                    window: "P7D"
+                    steps:
+                      - { step: "signup", users: 10000, conversion_from_prev: 1.0 }
+                      - { step: "view_page", users: 7200, conversion_from_prev: 0.72 }
+                      - { step: "add_to_cart", users: 2100, conversion_from_prev: 0.2917 }
+                      - { step: "purchase", users: 900, conversion_from_prev: 0.4286 }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/metrics/retention:
+    get:
+      tags: [metrics]
+      summary: Cohort retention grid (signup week x active week)
+      operationId: getRetention
+      parameters:
+        - { $ref: "#/components/parameters/From" }
+        - { $ref: "#/components/parameters/To" }
+        - name: max_weeks
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 26, default: 12 }
+      responses:
+        "200":
+          description: Retention grid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionResponse" }
+              examples:
+                r:
+                  value:
+                    cohorts:
+                      - cohort_week: "2026-01-05"
+                        size: 1200
+                        retention: [1.0, 0.42, 0.31, 0.27]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/metrics/top:
+    get:
+      tags: [metrics]
+      summary: Top-N entities per group, ranked
+      operationId: getTop
+      parameters:
+        - { $ref: "#/components/parameters/From" }
+        - { $ref: "#/components/parameters/To" }
+        - name: dimension
+          in: query
+          required: true
+          description: Payload field to rank (e.g. page, product_id).
+          schema: { type: string }
+        - name: group_by
+          in: query
+          required: false
+          description: Optional grouping field; ranking is per group.
+          schema: { type: string }
+        - name: metric
+          in: query
+          required: false
+          schema: { type: string, enum: [count, sum_amount, unique_users], default: count }
+        - name: n
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Ranked entities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TopResponse" }
+              examples:
+                t:
+                  value:
+                    rows:
+                      - { group: "us", entity: "/pricing", rank: 1, value: 5210 }
+                      - { group: "us", entity: "/home", rank: 2, value: 4880 }
+                    next_cursor: "eyJvIjoyfQ=="
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/metrics/latency:
+    get:
+      tags: [metrics]
+      summary: Percentiles of a numeric payload field
+      operationId: getLatency
+      parameters:
+        - { $ref: "#/components/parameters/From" }
+        - { $ref: "#/components/parameters/To" }
+        - name: field
+          in: query
+          required: false
+          schema: { type: string, default: "latency_ms" }
+        - name: event_type
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Percentiles
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LatencyResponse" }
+              examples:
+                l:
+                  value: { field: "latency_ms", count: 482310, p50: 180, p90: 410, p95: 620, p99: 1450 }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/sessions/active:
+    get:
+      tags: [sessions]
+      summary: Sessionization via gap-and-island
+      operationId: getActiveSessions
+      parameters:
+        - { $ref: "#/components/parameters/From" }
+        - { $ref: "#/components/parameters/To" }
+        - name: gap_minutes
+          in: query
+          required: false
+          description: Inactivity gap that starts a new session.
+          schema: { type: integer, minimum: 1, maximum: 240, default: 30 }
+        - name: user_id
+          in: query
+          required: false
+          schema: { type: string }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Sessions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionsResponse" }
+              examples:
+                s:
+                  value:
+                    sessions:
+                      - { user_id: "u_1024", started_at: "2026-01-15T10:00:00Z", ended_at: "2026-01-15T10:42:00Z", events: 14, duration_seconds: 2520 }
+                    next_cursor: null
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+components:
+  parameters:
+    From:
+      name: from
+      in: query
+      required: true
+      description: Inclusive start, ISO-8601 UTC.
+      schema: { type: string, format: date-time }
+    To:
+      name: to
+      in: query
+      required: true
+      description: Exclusive end, ISO-8601 UTC. Must be > from.
+      schema: { type: string, format: date-time }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor returned as next_cursor.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            badRange:
+              value:
+                type: "https://errors.example.com/bad-request"
+                title: "Invalid request parameters"
+                status: 400
+                detail: "'from' must be earlier than 'to'."
+                instance: "/v1/metrics/timeseries"
+                errors:
+                  - { field: "to", message: "must be greater than 'from'" }
+
+  schemas:
+    Health:
+      type: object
+      required: [status, checks]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [ready, degraded] }
+        checks:
+          type: object
+          required: [postgres, redis]
+          additionalProperties: false
+          properties:
+            postgres: { type: string, enum: [up, down] }
+            redis: { type: string, enum: [up, down] }
+
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    Event:
+      type: object
+      required: [event_id, user_id, event_type, occurred_at]
+      additionalProperties: false
+      properties:
+        event_id: { type: string, format: uuid }
+        user_id: { type: string }
+        session_id: { type: [string, "null"] }
+        event_type: { type: string }
+        occurred_at: { type: string, format: date-time }
+        payload: { type: object, additionalProperties: true }
+
+    EventBatch:
+      type: object
+      required: [events]
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items: { $ref: "#/components/schemas/Event" }
+
+    IngestResult:
+      type: object
+      required: [received, accepted, duplicates]
+      additionalProperties: false
+      properties:
+        received: { type: integer, minimum: 0 }
+        accepted: { type: integer, minimum: 0 }
+        duplicates: { type: integer, minimum: 0 }
+
+    TimeseriesPoint:
+      type: object
+      required: [ts, count]
+      additionalProperties: false
+      properties:
+        ts: { type: string, format: date-time }
+        count: { type: integer, minimum: 0 }
+
+    TimeseriesResponse:
+      type: object
+      required: [bucket, series]
+      additionalProperties: false
+      properties:
+        bucket: { type: string, enum: [hour, day, week] }
+        series:
+          type: array
+          items: { $ref: "#/components/schemas/TimeseriesPoint" }
+
+    FunnelStep:
+      type: object
+      required: [step, users, conversion_from_prev]
+      additionalProperties: false
+      properties:
+        step: { type: string }
+        users: { type: integer, minimum: 0 }
+        conversion_from_prev: { type: number, minimum: 0, maximum: 1 }
+
+    FunnelResponse:
+      type: object
+      required: [window, steps]
+      additionalProperties: false
+      properties:
+        window: { type: string }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/FunnelStep" }
+
+    RetentionCohort:
+      type: object
+      required: [cohort_week, size, retention]
+      additionalProperties: false
+      properties:
+        cohort_week: { type: string, format: date }
+        size: { type: integer, minimum: 0 }
+        retention:
+          type: array
+          items: { type: number, minimum: 0, maximum: 1 }
+
+    RetentionResponse:
+      type: object
+      required: [cohorts]
+      additionalProperties: false
+      properties:
+        cohorts:
+          type: array
+          items: { $ref: "#/components/schemas/RetentionCohort" }
+
+    TopRow:
+      type: object
+      required: [entity, rank, value]
+      additionalProperties: false
+      properties:
+        group: { type: [string, "null"] }
+        entity: { type: string }
+        rank: { type: integer, minimum: 1 }
+        value: { type: number }
+
+    TopResponse:
+      type: object
+      required: [rows]
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/TopRow" }
+        next_cursor: { type: [string, "null"] }
+
+    LatencyResponse:
+      type: object
+      required: [field, count, p50, p90, p95, p99]
+      additionalProperties: false
+      properties:
+        field: { type: string }
+        count: { type: integer, minimum: 0 }
+        p50: { type: number }
+        p90: { type: number }
+        p95: { type: number }
+        p99: { type: number }
+
+    Session:
+      type: object
+      required: [user_id, started_at, ended_at, events, duration_seconds]
+      additionalProperties: false
+      properties:
+        user_id: { type: string }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        events: { type: integer, minimum: 1 }
+        duration_seconds: { type: integer, minimum: 0 }
+
+    SessionsResponse:
+      type: object
+      required: [sessions]
+      additionalProperties: false
+      properties:
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/Session" }
+        next_cursor: { type: [string, "null"] }
