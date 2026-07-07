@@ -52,3 +52,7 @@ export function payloadTooLarge(detail: string): HttpProblemError {
 export function serviceUnavailable(detail: string): HttpProblemError {
   return new HttpProblemError(503, "Service not ready", { detail });
 }
+
+export function tooManyRequests(detail: string): HttpProblemError {
+  return new HttpProblemError(429, "Rate limited", { detail });
+}
